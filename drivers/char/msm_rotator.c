@@ -745,7 +745,6 @@ static int get_bpp(int format)
 	case MDP_YCRCB_H1V1:
 		return 3;
 
-	case MDP_YCBYCR_H2V1:
 	case MDP_YCRYCB_H2V1:
 		return 2;/* YCrYCb interleave */
 
@@ -789,7 +788,6 @@ static int msm_rotator_get_plane_sizes(uint32_t format,	uint32_t w, uint32_t h,
 	case MDP_RGB_888:
 	case MDP_RGB_565:
 	case MDP_BGR_565:
-	case MDP_YCBYCR_H2V1:
 	case MDP_YCRYCB_H2V1:
 	case MDP_YCBCR_H1V1:
 	case MDP_YCRCB_H1V1:
@@ -799,7 +797,6 @@ static int msm_rotator_get_plane_sizes(uint32_t format,	uint32_t w, uint32_t h,
 	case MDP_Y_CRCB_H2V1:
 	case MDP_Y_CBCR_H2V1:
 	case MDP_Y_CRCB_H1V2:
-	case MDP_Y_CBCR_H1V2:
 		p->num_planes = 2;
 		p->plane_size[0] = w * h;
 		p->plane_size[1] = w * h;
@@ -1167,305 +1164,6 @@ static int msm_rotator_ycxcx_h2v2(struct msm_rotator_img_info *info,
 		iowrite32((is_tile ? 2 : 0) << 29 |  /* frame format */
 			  (use_imem ? 0 : 1) << 22 | /* tile size */
 			  (in_chroma2_paddr ? 1 : 2) << 19 | /* fetch planes */
-			  0 << 18 |		/* unpack align */
-			  1 << 17 |		/* unpack tight */
-			  1 << 13 |		/* unpack count 0=1 component */
-			  0 << 9  |		/* src Bpp 0=1 byte ... */
-			  0 << 8  |		/* has alpha */
-			  0 << 6  |		/* alpha bits 3=8bits */
-			  3 << 4  |		/* R/Cr bits 1=5 2=6 3=8 */
-			  3 << 2  |		/* B/Cb bits 1=5 2=6 3=8 */
-			  3 << 0,		/* G/Y  bits 1=5 2=6 3=8 */
-			  MSM_ROTATOR_SRC_FORMAT);
-	}
-	return 0;
-}
-
-static int msm_rotator_ycxcx_h2v2_2pass(struct msm_rotator_img_info *info,
-				  unsigned int in_paddr,
-				  unsigned int out_paddr,
-				  unsigned int use_imem,
-				  int new_session,
-				  unsigned int in_chroma_paddr,
-				  unsigned int out_chroma_paddr,
-				  unsigned int in_chroma2_paddr,
-				  unsigned int out_chroma2_paddr,
-				  int fast_yuv_en,
-				  int enable_2pass,
-				  int session_index)
-{
-	uint32_t pass2_src_format, pass1_dst_format, dst_format;
-	int is_tile = 0, post_pass1_buf_is_planar = 0;
-	unsigned int status;
-	int post_pass1_ystride = info->src_rect.w >> info->downscale_ratio;
-	int post_pass1_height = info->src_rect.h >> info->downscale_ratio;
-
-	/* DST format = SRC format for non-tiled SRC formats
-	 * when fast YUV is enabled. For TILED formats,
-	 * DST format of MDP_Y_CRCB_H2V2_TILE = MDP_Y_CRCB_H2V2
-	 * DST format of MDP_Y_CBCR_H2V2_TILE = MDP_Y_CBCR_H2V2
-	 */
-	switch (info->src.format) {
-	case MDP_Y_CRCB_H2V2_TILE:
-		is_tile = 1;
-		dst_format = MDP_Y_CRCB_H2V2;
-		pass1_dst_format = MDP_Y_CRCB_H2V2;
-		pass2_src_format = pass1_dst_format;
-		break;
-	case MDP_Y_CR_CB_H2V2:
-	case MDP_Y_CR_CB_GH2V2:
-	case MDP_Y_CB_CR_H2V2:
-		post_pass1_buf_is_planar = 1;
-	case MDP_Y_CRCB_H2V2:
-	case MDP_Y_CBCR_H2V2:
-		dst_format = info->src.format;
-		pass1_dst_format = info->src.format;
-		pass2_src_format = pass1_dst_format;
-		break;
-	case MDP_Y_CBCR_H2V2_TILE:
-		is_tile = 1;
-		dst_format = MDP_Y_CBCR_H2V2;
-		pass1_dst_format = info->src.format;
-		pass2_src_format = pass1_dst_format;
-		break;
-	default:
-		return -EINVAL;
-	}
-	if (info->dst.format  != dst_format)
-		return -EINVAL;
-
-	/* Beginning of Pass-1 */
-	/* rotator expects YCbCr for planar input format */
-	if ((info->src.format == MDP_Y_CR_CB_H2V2 ||
-	    info->src.format == MDP_Y_CR_CB_GH2V2) &&
-	    rotator_hw_revision < ROTATOR_REVISION_V2)
-		swap(in_chroma_paddr, in_chroma2_paddr);
-
-	iowrite32(in_paddr, MSM_ROTATOR_SRCP0_ADDR);
-	iowrite32(in_chroma_paddr, MSM_ROTATOR_SRCP1_ADDR);
-	iowrite32(in_chroma2_paddr, MSM_ROTATOR_SRCP2_ADDR);
-
-	if (new_session) {
-		if (in_chroma2_paddr) {
-			if (info->src.format == MDP_Y_CR_CB_GH2V2) {
-				iowrite32(ALIGN(info->src.width, 16) |
-					ALIGN((info->src.width / 2), 16) << 16,
-					MSM_ROTATOR_SRC_YSTRIDE1);
-				iowrite32(ALIGN((info->src.width / 2), 16),
-					MSM_ROTATOR_SRC_YSTRIDE2);
-			} else {
-				iowrite32(info->src.width |
-					(info->src.width / 2) << 16,
-					MSM_ROTATOR_SRC_YSTRIDE1);
-				iowrite32((info->src.width / 2),
-					MSM_ROTATOR_SRC_YSTRIDE2);
-			}
-		} else {
-			iowrite32(info->src.width |
-					info->src.width << 16,
-					MSM_ROTATOR_SRC_YSTRIDE1);
-		}
-	}
-
-	pr_debug("src_rect.w=%i src_rect.h=%i src_rect.x=%i src_rect.y=%i",
-		info->src_rect.w, info->src_rect.h, info->src_rect.x,
-		info->src_rect.y);
-	pr_debug("src.width=%i src.height=%i src_format=%i",
-		info->src.width, info->src.height, info->src.format);
-	pr_debug("dst_width=%i dst_height=%i dst.x=%i dst.y=%i",
-		info->dst.width, info->dst.height, info->dst_x, info->dst_y);
-	pr_debug("post_pass1_ystride=%i post_pass1_height=%i downscale=%i",
-		post_pass1_ystride, post_pass1_height, info->downscale_ratio);
-
-	rotator_allocate_2pass_buf(mrd->y_rot_buf, session_index);
-	rotator_allocate_2pass_buf(mrd->chroma_rot_buf, session_index);
-	if (post_pass1_buf_is_planar)
-		rotator_allocate_2pass_buf(mrd->chroma2_rot_buf, session_index);
-
-	iowrite32(mrd->y_rot_buf->write_addr, MSM_ROTATOR_OUTP0_ADDR);
-	iowrite32(mrd->chroma_rot_buf->write_addr, MSM_ROTATOR_OUTP1_ADDR);
-	if (post_pass1_buf_is_planar)
-		iowrite32(mrd->chroma2_rot_buf->write_addr,
-				MSM_ROTATOR_OUTP2_ADDR);
-
-	if (post_pass1_buf_is_planar) {
-		if (pass1_dst_format == MDP_Y_CR_CB_GH2V2) {
-			iowrite32(ALIGN(post_pass1_ystride, 16) |
-				ALIGN((post_pass1_ystride / 2), 16) << 16,
-				MSM_ROTATOR_OUT_YSTRIDE1);
-			iowrite32(ALIGN((post_pass1_ystride / 2), 16),
-				MSM_ROTATOR_OUT_YSTRIDE2);
-		} else {
-			iowrite32(post_pass1_ystride |
-					post_pass1_ystride / 2 << 16,
-					MSM_ROTATOR_OUT_YSTRIDE1);
-			iowrite32(post_pass1_ystride / 2,
-					MSM_ROTATOR_OUT_YSTRIDE2);
-		}
-	} else {
-		iowrite32(post_pass1_ystride |
-				post_pass1_ystride << 16,
-				MSM_ROTATOR_OUT_YSTRIDE1);
-	}
-
-	if (pass1_dst_format == MDP_Y_CBCR_H2V2 ||
-		pass1_dst_format == MDP_Y_CB_CR_H2V2) {
-		iowrite32(GET_PACK_PATTERN(0, 0, CLR_CB, CLR_CR, 8),
-			  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-		iowrite32(GET_PACK_PATTERN(0, 0, CLR_CB, CLR_CR, 8),
-			  MSM_ROTATOR_OUT_PACK_PATTERN1);
-	} else {
-		iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
-			  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-		iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
-			  MSM_ROTATOR_OUT_PACK_PATTERN1);
-	}
-
-	iowrite32((3  << 18) |		/* chroma sampling 3=4:2:0 */
-		   0 << 9 |		/* Pass-1 No Rotation */
-		   1 << 8 |			/* ROT_EN */
-		   fast_yuv_en << 4 |		/*fast YUV*/
-		   info->downscale_ratio << 2 |	/* downscale v ratio */
-		   info->downscale_ratio,	/* downscale h ratio */
-		   MSM_ROTATOR_SUB_BLOCK_CFG);
-
-	iowrite32((is_tile ? 2 : 0) << 29 |  /* frame format */
-		  (use_imem ? 0 : 1) << 22 | /* tile size */
-		  (in_chroma2_paddr ? 1 : 2) << 19 | /* fetch planes */
-		  0 << 18 |		/* unpack align */
-		  1 << 17 |		/* unpack tight */
-		  1 << 13 |		/* unpack count 0=1 component */
-		  0 << 9  |		/* src Bpp 0=1 byte ... */
-		  0 << 8  |		/* has alpha */
-		  0 << 6  |		/* alpha bits 3=8bits */
-		  3 << 4  |		/* R/Cr bits 1=5 2=6 3=8 */
-		  3 << 2  |		/* B/Cb bits 1=5 2=6 3=8 */
-		  3 << 0,		/* G/Y  bits 1=5 2=6 3=8 */
-		  MSM_ROTATOR_SRC_FORMAT);
-
-	iowrite32(3, MSM_ROTATOR_INTR_ENABLE);
-
-	msm_rotator_dev->processing = 1;
-	iowrite32(0x1, MSM_ROTATOR_START);
-	/* End of Pass-1 */
-	wait_event(msm_rotator_dev->wq,
-		   (msm_rotator_dev->processing == 0));
-	/* Beginning of Pass-2 */
-	status = (unsigned char)ioread32(MSM_ROTATOR_INTR_STATUS);
-	if ((status & 0x03) != 0x01) {
-		pr_err("%s(): AXI Bus Error, issuing SW_RESET\n",
-							__func__);
-		iowrite32(0x1, MSM_ROTATOR_SW_RESET);
-	}
-	iowrite32(0, MSM_ROTATOR_INTR_ENABLE);
-	iowrite32(3, MSM_ROTATOR_INTR_CLEAR);
-
-	if (use_imem)
-		iowrite32(0x42, MSM_ROTATOR_MAX_BURST_SIZE);
-
-	iowrite32(((post_pass1_height & 0x1fff)
-				<< 16) |
-		  (post_pass1_ystride & 0x1fff),
-		  MSM_ROTATOR_SRC_SIZE);
-	iowrite32(0 << 16 | 0,
-		  MSM_ROTATOR_SRC_XY);
-	iowrite32(((post_pass1_height & 0x1fff)
-				<< 16) |
-		  (post_pass1_ystride & 0x1fff),
-		  MSM_ROTATOR_SRC_IMAGE_SIZE);
-
-	/* rotator expects YCbCr for planar input format */
-	if ((pass2_src_format == MDP_Y_CR_CB_H2V2 ||
-	    pass2_src_format == MDP_Y_CR_CB_GH2V2) &&
-	    rotator_hw_revision < ROTATOR_REVISION_V2)
-		swap(mrd->chroma_rot_buf->read_addr,
-				mrd->chroma2_rot_buf->read_addr);
-
-	iowrite32(mrd->y_rot_buf->read_addr, MSM_ROTATOR_SRCP0_ADDR);
-	iowrite32(mrd->chroma_rot_buf->read_addr,
-						MSM_ROTATOR_SRCP1_ADDR);
-	if (mrd->chroma2_rot_buf->read_addr)
-		iowrite32(mrd->chroma2_rot_buf->read_addr,
-						MSM_ROTATOR_SRCP2_ADDR);
-
-	if (post_pass1_buf_is_planar) {
-		if (pass2_src_format == MDP_Y_CR_CB_GH2V2) {
-			iowrite32(ALIGN(post_pass1_ystride, 16) |
-				ALIGN((post_pass1_ystride / 2), 16) << 16,
-				MSM_ROTATOR_SRC_YSTRIDE1);
-			iowrite32(ALIGN((post_pass1_ystride / 2), 16),
-				MSM_ROTATOR_SRC_YSTRIDE2);
-		} else {
-			iowrite32(post_pass1_ystride |
-				(post_pass1_ystride / 2) << 16,
-				MSM_ROTATOR_SRC_YSTRIDE1);
-			iowrite32((post_pass1_ystride / 2),
-				MSM_ROTATOR_SRC_YSTRIDE2);
-		}
-	} else {
-		iowrite32(post_pass1_ystride |
-				post_pass1_ystride << 16,
-				MSM_ROTATOR_SRC_YSTRIDE1);
-	}
-
-	iowrite32(out_paddr +
-			((info->dst_y * info->dst.width) + info->dst_x),
-		  MSM_ROTATOR_OUTP0_ADDR);
-	iowrite32(out_chroma_paddr +
-			(((info->dst_y * info->dst.width)/2) + info->dst_x),
-		  MSM_ROTATOR_OUTP1_ADDR);
-	if (out_chroma2_paddr)
-		iowrite32(out_chroma2_paddr +
-			(((info->dst_y * info->dst.width)/2) + info->dst_x),
-			  MSM_ROTATOR_OUTP2_ADDR);
-
-
-	if (new_session) {
-		if (out_chroma2_paddr) {
-			if (info->dst.format == MDP_Y_CR_CB_GH2V2) {
-				iowrite32(ALIGN(info->dst.width, 16) |
-					ALIGN((info->dst.width / 2), 16) << 16,
-					MSM_ROTATOR_OUT_YSTRIDE1);
-				iowrite32(ALIGN((info->dst.width / 2), 16),
-					MSM_ROTATOR_OUT_YSTRIDE2);
-			} else {
-				iowrite32(info->dst.width |
-						info->dst.width/2 << 16,
-						MSM_ROTATOR_OUT_YSTRIDE1);
-				iowrite32(info->dst.width/2,
-						MSM_ROTATOR_OUT_YSTRIDE2);
-			}
-		} else {
-			iowrite32(info->dst.width |
-					info->dst.width << 16,
-					MSM_ROTATOR_OUT_YSTRIDE1);
-		}
-
-		if (dst_format == MDP_Y_CBCR_H2V2 ||
-			dst_format == MDP_Y_CB_CR_H2V2) {
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CB, CLR_CR, 8),
-				  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CB, CLR_CR, 8),
-				  MSM_ROTATOR_OUT_PACK_PATTERN1);
-		} else {
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
-				  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
-				  MSM_ROTATOR_OUT_PACK_PATTERN1);
-		}
-
-		iowrite32((3  << 18) |	/* chroma sampling 3=4:2:0 */
-			  (ROTATIONS_TO_BITMASK(info->rotations) << 9) |
-			  1 << 8 |			/* ROT_EN */
-			  fast_yuv_en << 4 |		/*fast YUV*/
-			  0 << 2 |	/* No downscale in Pass-2 */
-			  0,	/* No downscale in Pass-2 */
-			  MSM_ROTATOR_SUB_BLOCK_CFG);
-
-		iowrite32(0 << 29 |
-				/* Output of Pass-1 will always be non-tiled */
-			  (use_imem ? 0 : 1) << 22 | /* tile size */
-			  (in_chroma2_paddr ? 1 : 2) << 19 | /* fetch planes */
 			  0 << 18 | 		/* unpack align */
 			  1 << 17 | 		/* unpack tight */
 			  1 << 13 | 		/* unpack count 0=1 component */
@@ -1480,7 +1178,7 @@ static int msm_rotator_ycxcx_h2v2_2pass(struct msm_rotator_img_info *info,
 	return 0;
 }
 
-static int msm_rotator_ycxycx(struct msm_rotator_img_info *info,
+static int msm_rotator_ycrycb(struct msm_rotator_img_info *info,
 			      unsigned int in_paddr,
 			      unsigned int out_paddr,
 			      unsigned int use_imem,
@@ -1490,22 +1188,13 @@ static int msm_rotator_ycxycx(struct msm_rotator_img_info *info,
 	int bpp;
 	uint32_t dst_format;
 
-	switch (info->src.format) {
-	case MDP_YCBYCR_H2V1:
-		if (info->rotations & MDP_ROT_90)
-			dst_format = MDP_Y_CBCR_H1V2;
-		else
-			dst_format = MDP_Y_CBCR_H2V1;
-		break;
-	case MDP_YCRYCB_H2V1:
+	if (info->src.format == MDP_YCRYCB_H2V1) {
 		if (info->rotations & MDP_ROT_90)
 			dst_format = MDP_Y_CRCB_H1V2;
 		else
 			dst_format = MDP_Y_CRCB_H2V1;
-		break;
-	default:
+	} else
 		return -EINVAL;
-	}
 
 	if (info->dst.format != dst_format)
 		return -EINVAL;
@@ -1534,18 +1223,10 @@ static int msm_rotator_ycxycx(struct msm_rotator_img_info *info,
 				  (info->dst.width) << 16,
 				  MSM_ROTATOR_OUT_YSTRIDE1);
 
-		if (dst_format == MDP_Y_CBCR_H1V2 ||
-			dst_format == MDP_Y_CBCR_H2V1) {
-			iowrite32(GET_PACK_PATTERN(0, CLR_CB, 0, CLR_CR, 8),
-					MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CB, CLR_CR, 8),
-					MSM_ROTATOR_OUT_PACK_PATTERN1);
-		} else {
-			iowrite32(GET_PACK_PATTERN(0, CLR_CR, 0, CLR_CB, 8),
-					MSM_ROTATOR_SRC_UNPACK_PATTERN1);
-			iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
-					MSM_ROTATOR_OUT_PACK_PATTERN1);
-		}
+		iowrite32(GET_PACK_PATTERN(CLR_Y, CLR_CR, CLR_Y, CLR_CB, 8),
+			  MSM_ROTATOR_SRC_UNPACK_PATTERN1);
+		iowrite32(GET_PACK_PATTERN(0, 0, CLR_CR, CLR_CB, 8),
+			  MSM_ROTATOR_OUT_PACK_PATTERN1);
 		iowrite32((1  << 18) | 		/* chroma sampling 1=H2V1 */
 			  (ROTATIONS_TO_BITMASK(info->rotations) << 9) |
 			  1 << 8 |			/* ROT_EN */
@@ -2083,8 +1764,7 @@ static int msm_rotator_do_rotate_sub(
 	case MDP_Y_CR_CB_GH2V2:
 	case MDP_Y_CRCB_H2V2_TILE:
 	case MDP_Y_CBCR_H2V2_TILE:
-		if (!commit_info->enable_2pass)
-			rc = msm_rotator_ycxcx_h2v2(img_info,
+		rc = msm_rotator_ycxcx_h2v2(img_info,
 					    in_paddr, out_paddr, use_imem,
 					    msm_rotator_dev->last_session_idx
 								!= s,
@@ -2093,18 +1773,6 @@ static int msm_rotator_do_rotate_sub(
 					    in_chroma2_paddr,
 					    out_chroma2_paddr,
 					    commit_info->fast_yuv_en);
-		else
-			rc = msm_rotator_ycxcx_h2v2_2pass(img_info,
-					    in_paddr, out_paddr, use_imem,
-					    msm_rotator_dev->last_session_idx
-								!= s,
-					    in_chroma_paddr,
-					    out_chroma_paddr,
-					    in_chroma2_paddr,
-					    out_chroma2_paddr,
-					    commit_info->fast_yuv_en,
-					    commit_info->enable_2pass,
-					    s);
 		break;
 	case MDP_Y_CBCR_H2V1:
 	case MDP_Y_CRCB_H2V1:
@@ -2115,9 +1783,8 @@ static int msm_rotator_do_rotate_sub(
 					    in_chroma_paddr,
 					    out_chroma_paddr);
 		break;
-	case MDP_YCBYCR_H2V1:
 	case MDP_YCRYCB_H2V1:
-		rc = msm_rotator_ycxycx(img_info,
+		rc = msm_rotator_ycrycb(img_info,
 				in_paddr, out_paddr, use_imem,
 				msm_rotator_dev->last_session_idx != s,
 				out_chroma_paddr);
@@ -2491,27 +2158,13 @@ static int msm_rotator_start(unsigned long arg,
 		is_rgb = 1;
 		info.dst.format = info.src.format;
 		break;
-	case MDP_Y_CBCR_H2V1:
-	if (info.rotations & MDP_ROT_90) {
-		info.dst.format = MDP_Y_CBCR_H1V2;
-		break;
-	}
-	case MDP_Y_CRCB_H2V1:
-	if (info.rotations & MDP_ROT_90) {
-		info.dst.format = MDP_Y_CRCB_H1V2;
-		break;
-	}
 	case MDP_Y_CBCR_H2V2:
 	case MDP_Y_CRCB_H2V2:
+	case MDP_Y_CBCR_H2V1:
+	case MDP_Y_CRCB_H2V1:
 	case MDP_YCBCR_H1V1:
 	case MDP_YCRCB_H1V1:
 		info.dst.format = info.src.format;
-		break;
-	case MDP_YCBYCR_H2V1:
-		if (info.rotations & MDP_ROT_90)
-			info.dst.format = MDP_Y_CBCR_H1V2;
-		else
-			info.dst.format = MDP_Y_CBCR_H2V1;
 		break;
 	case MDP_YCRYCB_H2V1:
 		if (info.rotations & MDP_ROT_90)
