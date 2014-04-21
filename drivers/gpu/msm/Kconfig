@@ -96,3 +96,8 @@ config MSM_KGSL_DISABLE_SHADOW_WRITES
 	bool "Disable register shadow writes for context switches"
 	default n
 	depends on MSM_KGSL
+
+config KCONTROL_GPU_MSM
+	tristate "GPU control module"
+	help
+		A module to set GPU clocks in showp1984's kcontrol app.
