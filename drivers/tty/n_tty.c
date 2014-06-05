@@ -1986,8 +1986,6 @@ static ssize_t n_tty_write(struct tty_struct *tty, struct file *file,
 			if (tty->ops->flush_chars)
 				tty->ops->flush_chars(tty);
 		} else {
-			struct n_tty_data *ldata = tty->disc_data;
-
 			while (nr > 0) {
 				mutex_lock(&tty->output_lock);
 				c = tty->ops->write(tty, b, nr);
@@ -2129,3 +2127,4 @@ void n_tty_inherit_ops(struct tty_ldisc_ops *ops)
 	ops->refcount = ops->flags = 0;
 }
 EXPORT_SYMBOL_GPL(n_tty_inherit_ops);
+
